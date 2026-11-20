@@ -25,6 +25,7 @@ Omacleaner targets **Omarchy 4 (Quattro shell)** or later. Everything it needs s
 |---|---|---|
 | `bash` ≥ 5, `jq`, `gawk` | bash, jq, gawk | the CLI, its JSON output, the memory view |
 | `du`, `find`, `numfmt`, `flock`, `column` | coreutils, findutils, util-linux | scanning, sizes, locking |
+| `python3` | python | descriptor-based filesystem guards and lossless filename handling |
 | `pkexec` | polkit | the privileged helper (system items only) |
 | `systemctl --user` | systemd | quitting applications from the Memory tab |
 | `paccache` | pacman-contrib | the **Package cache** module |
@@ -35,7 +36,6 @@ Omacleaner targets **Omarchy 4 (Quattro shell)** or later. Everything it needs s
 | `snapper` | snapper | the **Old snapshots** module |
 | `yay` / `paru` | AUR helpers | the **AUR build cache** module |
 | `notify-send` | libnotify | notifications from scheduled scans |
-| `gio` | glib2 | native Trash support (falls back to the freedesktop spec) |
 | `fc-cache`, `update-desktop-database`, `updatedb`, `fstrim`, `resolvectl` | fontconfig, desktop-file-utils, plocate, util-linux, systemd | the maintenance tasks |
 
 Modules whose tool is missing are shown as *n/a* with the reason. Nothing is ever installed for you.
@@ -151,7 +151,9 @@ The pre-selection is a default. Change it permanently with `omacleaner config se
 - Your home folder itself and the top-level `~/.config`, `~/.local/share` and `~/.cache` folders. Cache folders are emptied, never deleted.
 - `~/.cache/omarchy`, `~/.cache/quickshell`, and cache entries named `*.bak`, `*.backup`, `*.orig` or `*.old`.
 - Every path in your ignore list (`omacleaner ignore add PATH`), **including paths deep inside a folder being cleaned**. The folder is pruned around them: everything else goes, while the excluded path and its parent folders stay. A folder that contains an excluded path is never moved to Trash as a whole. Glob entries such as `*/myapp/*.keep` are supported.
-- Symlinks are removed, never followed. Removal never crosses filesystems.
+- Symlinked parent directories are refused; symlinks inside a selected tree are removed without following them. Removal never crosses mount boundaries, including bind mounts on the same filesystem.
+- If saved settings cannot be read or validated, scanning and cleanup stop. A saved empty selection selects nothing.
+- Excluded Trash files keep their restore metadata. Trash moves use the freedesktop layout in your home folder and refuse cross-filesystem moves.
 
 ## Remote control
 
@@ -210,6 +212,7 @@ Plugins run unsandboxed inside `omarchy-shell`. Read the code before enabling, a
 - The QML runs only the bundled `bin/omacleaner` and `xdg-open`. It makes no network calls.
 - `bin/omacleaner-root` is the only code that runs as root. It runs through `pkexec`, so every use needs your password, and it accepts only these verbs: `pacman-cache N`, `journal N`, `coredumps`, `orphans`, `snapper`, `dns-flush`, `trim`, `locate-db`, `drop-caches`. Each verb maps to one fixed command, listed at the top of the file.
 - The Memory tab can only signal processes you own. It refuses the desktop session components and the terminal the CLI runs in, and it always asks before quitting.
+- Background scans carry personal paths through standard input rather than subprocess command arguments. JSON results include an exact base64 filename identity for cleanup, including filenames that are not valid UTF-8.
 - Enabling the widget starts scan-only background checks; cleanup requires an explicit action. The local installer enables the widget through Omarchy and backs up `shell.json` first. Optional CLI links and scheduled scans require separate setup.
 
 ## Troubleshooting
@@ -223,6 +226,7 @@ Plugins run unsandboxed inside `omarchy-shell`. Read the code before enabling, a
 
 ```bash
 tests/run.sh -v                       # full test suite in a throw-away $HOME (no root, no real files)
+PYTHONDONTWRITEBYTECODE=1 python3 tests/test_safety.py
 shellcheck -x bin/* lib/*.sh tests/run.sh install.sh
 omarchy plugin validate .
 ```

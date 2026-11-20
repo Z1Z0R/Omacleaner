@@ -62,13 +62,20 @@ it merges the result into the cached state.
 }
 ```
 
+Every scan item also includes `pathBase64` (the original filename bytes) and
+`pathIsUtf8` (whether `path` can be used losslessly by a UTF-8 client). Use
+`pathBase64` with `trash --path-base64` for file actions; `path` is display text
+and can contain replacement characters for non-UTF-8 filenames.
+
 Items of root and command modules use pseudo paths such as
 `pacman-cache:old`, `journal:vacuum`, `pkg:<name>` or `docker:Images`.
 
 ### `clean (MODULE... | --defaults) [--dry-run] [--yes] [--json]`
 
 Re-scans the named modules, then cleans them. `--defaults` uses the
-pre-selection. Root modules are batched into a single `pkexec` call, so you are
+pre-selection. An explicitly saved empty selection selects nothing and exits
+with code 2. Unreadable or malformed saved configuration stops scanning and
+cleanup instead of applying defaults. Root modules are batched into a single `pkexec` call, so you are
 asked for your password once. `large-files` is review-only: it is reported as
 `skipped` and never cleaned in bulk.
 
@@ -111,11 +118,15 @@ Only one `clean` runs at a time. A concurrent run exits with code 1.
 { "ok": true, "tasks": [ { "verb": "font-cache", "ok": true, "message": "" } ] }
 ```
 
-### `trash PATH... [--yes] [--json]`
+### `trash PATH... [--path-base64] [--yes] [--json]`
 
 Moves files or folders to the freedesktop Trash. This is how the panel removes
 a single large file. Paths outside `$HOME` (or a mounted drive's own trash) and
-ignored paths are refused.
+ignored paths are refused. Moves across filesystems are refused.
+
+With `--path-base64`, each positional value is the exact `pathBase64` from a
+scan instead of a display path. This preserves every legal Linux filename,
+including non-UTF-8 bytes. NUL-containing or invalid base64 values are refused.
 
 ### `memory [--limit N] [--json]`
 

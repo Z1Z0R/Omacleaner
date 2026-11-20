@@ -238,12 +238,12 @@ Panel {
     taskProc.running = true
   }
 
-  function trashItem(path) {
-    if (busy || !path) return
+  function trashItem(pathBase64) {
+    if (busy || !pathBase64) return
     errorText = ""
     statusText = "Moving to Trash…"
     maintaining = true
-    taskProc.command = [cliPath, "trash", path, "--yes", "--json", "--quiet"]
+    taskProc.command = [cliPath, "trash", "--path-base64", pathBase64, "--yes", "--json", "--quiet"]
     taskProc.running = true
   }
 
@@ -772,6 +772,7 @@ Panel {
                           focusable: true
                           visible: String(cacheItem.modelData.path).indexOf("/") === 0
                           text: "Open folder"
+                          enabled: cacheItem.modelData.pathIsUtf8 === true
                           bordered: true
 
                           foreground: root.bar.foreground
@@ -788,9 +789,9 @@ Panel {
                           foreground: root.bar.foreground
                           fontFamily: root.textFontFamily
                           fontSize: Style.font.caption
-                          enabled: !root.busy
+                          enabled: !root.busy && !!cacheItem.modelData.pathBase64
                           onClicked: root.askConfirm("Move this file to Trash?\n" + cacheItem.modelData.path,
-                            "Move to Trash", function() { root.trashItem(cacheItem.modelData.path) })
+                            "Move to Trash", function() { root.trashItem(cacheItem.modelData.pathBase64) })
                         }
                       }
                       PanelSeparator { width: parent.width; foreground: root.bar.foreground }

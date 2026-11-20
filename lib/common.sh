@@ -77,50 +77,79 @@ oc_to_bytes() {
 
 # Apparent size in bytes of a file or directory tree, without crossing
 # filesystems. Unreadable sub-entries are skipped rather than failing.
-oc_path_bytes() {
-  local out
-  out=$(du -sb --one-file-system -- "$1" 2>/dev/null | cut -f1) || true
-  echo "${out:-0}"
+# Filesystem helper input is NUL-delimited; no personal path enters argv.
+oc_fs() {
+  oc_ignore_load
+  { printf '%s\0' "$2" "$HOME" "$OC_CACHE_HOME" "$OC_DATA_HOME" "$OC_CONFIG_DIR";
+    if ((${#OC_IGNORE[@]})); then printf '%s\0' "${OC_IGNORE[@]}"; fi;
+  } | python3 "$OC_FS_HELPER" "$1"
 }
 
-# ---------------------------------------------------------------------------
-# Configuration (optional). The file is only written by explicit commands such
-# as `ignore add` or `config set`; defaults apply when it does not exist.
-# ---------------------------------------------------------------------------
-oc_config_get() {
-  local key=$1 fallback=$2 value=""
-  if [[ -f $OC_CONFIG_FILE ]]; then
-    value=$(jq -r --arg k "$key" '.[$k] // empty | tostring' "$OC_CONFIG_FILE" 2>/dev/null) || value=""
+oc_path_bytes() { oc_fs size "$1"; }
+
+# Read one validated snapshot. Only a genuinely absent config uses defaults.
+OC_FS_HELPER="${OC_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/lib/filesystem.py"
+OC_CONFIG_JSON='{}'
+OC_CONFIG_LOADED=0
+oc_config_load() {
+  ((OC_CONFIG_LOADED == 1)) && return 0
+  local current
+  current=$(printf '%s\0' "$OC_CONFIG_FILE" "$HOME" "$OC_CACHE_HOME" "$OC_DATA_HOME" "$OC_CONFIG_DIR" | python3 "$OC_FS_HELPER" config) || oc_die "configuration cannot be read; refusing to use defaults" 1
+  if [[ $current != '{}' ]]; then
+    OC_CONFIG_JSON=$(jq -ces '
+      if length != 1 then error("expected one object") else .[0] end
+      | if type != "object" then error("expected an object") else . end
+      | if (has("ignore") and (.ignore | type != "array" or any(.[]; type != "string" or length == 0 or contains("\u0000"))))
+          or (has("selection") and (.selection | type != "array" or any(.[]; type != "string")))
+          then error("invalid restrictions") else . end
+    ' <<<"$current" 2>/dev/null) || oc_die "configuration is invalid; refusing to use defaults" 1
+    local key value
+    for key in pacmanKeep journalMaxMB largeFileMinMB notifyThresholdMB; do
+      jq -e --arg k "$key" 'has($k) | not' <<<"$OC_CONFIG_JSON" >/dev/null && continue
+      jq -e --arg k "$key" '.[$k] | type == "number" and . >= 0 and . <= 999999 and floor == .' <<<"$OC_CONFIG_JSON" >/dev/null || oc_die "invalid configuration value: $key" 1
+    done
+    if declare -F validate_modules >/dev/null; then
+      while IFS= read -r -d '' value; do validate_modules "$value"; done < <(jq -j '.selection // [] | .[] | ., "\u0000"' <<<"$OC_CONFIG_JSON")
+    fi
   fi
-  echo "${value:-$fallback}"
+  OC_CONFIG_LOADED=1
+}
+
+oc_config_get() {
+  oc_config_load
+  jq -r --arg k "$1" --arg fallback "$2" 'if has($k) then .[$k] | tostring else $fallback end' <<<"$OC_CONFIG_JSON"
 }
 
 oc_config_write() {
-  # $1 = jq filter applied to the current config (or {} when absent).
+  oc_config_load
   mkdir -p "$OC_CONFIG_DIR"
-  local current='{}' tmp
-  [[ -f $OC_CONFIG_FILE ]] && current=$(cat "$OC_CONFIG_FILE")
+  local tmp
   tmp=$(mktemp "$OC_CONFIG_DIR/.config.XXXXXX")
-  if ! jq "${@:2}" "$1" <<<"$current" >"$tmp"; then
+  if ! jq "${@:2}" "$1" <<<"$OC_CONFIG_JSON" >"$tmp"; then
     rm -f "$tmp"
-    oc_die "could not update $OC_CONFIG_FILE"
+    oc_die "could not update configuration"
   fi
   mv -f "$tmp" "$OC_CONFIG_FILE"
 }
 
-# Prints one ignore-list entry per line (absolute paths or globs, ~ expanded,
-# trailing slashes removed).
 oc_ignore_list() {
-  [[ -f $OC_CONFIG_FILE ]] || return 0
-  jq -r '.ignore // [] | .[]' "$OC_CONFIG_FILE" 2>/dev/null | sed -e "s|^~|$HOME|" -e 's|/*$||' | grep -v '^$' || true
+  oc_ignore_load
+  if ((${#OC_IGNORE[@]})); then printf '%s\n' "${OC_IGNORE[@]}"; fi
 }
 
-# The ignore list is read once per process; deletion walks consult it often.
 OC_IGNORE=()
 OC_IGNORE_LOADED=0
 oc_ignore_load() {
   ((OC_IGNORE_LOADED == 1)) && return 0
-  mapfile -t OC_IGNORE < <(oc_ignore_list)
+  oc_config_load
+  mapfile -d '' -t OC_IGNORE < <(jq -j '.ignore // [] | .[] | ., "\u0000"' <<<"$OC_CONFIG_JSON")
+  local i entry
+  for i in "${!OC_IGNORE[@]}"; do
+    entry=${OC_IGNORE[$i]}
+    entry=${entry/#\~/$HOME}
+    while [[ $entry == */ && $entry != / ]]; do entry=${entry%/}; done
+    OC_IGNORE[$i]=$entry
+  done
   OC_IGNORE_LOADED=1
 }
 
@@ -132,70 +161,21 @@ oc_is_ignored() {
   local path=$1 entry
   oc_ignore_load
   for entry in "${OC_IGNORE[@]}"; do
+    [[ $entry == / ]] && return 0
     # shellcheck disable=SC2053 # glob matching is intended
     if [[ $path == "$entry" || $path == "$entry"/* || $path == $entry ]]; then
       return 0
     fi
   done
-  return 1
-}
-
-# True when something inside the directory $1 is covered by the ignore list,
-# i.e. removing $1 recursively would also remove an excluded path. Literal
-# entries are compared as paths; glob entries are searched for with find
-# (whose -path glob, like [[ == ]], lets * match across "/").
-oc_has_ignored_descendant() {
-  local dir=$1 entry
-  oc_ignore_load
-  ((${#OC_IGNORE[@]} > 0)) || return 1
-  [[ -d $dir && ! -L $dir ]] || return 1
-  for entry in "${OC_IGNORE[@]}"; do
-    if oc_is_glob "$entry"; then
-      [[ -n $(find "$dir" -xdev -mindepth 1 -path "$entry" -print -quit 2>/dev/null) ]] && return 0
-    elif [[ $entry == "$dir"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Remove everything inside $1 except ignored paths. Entries that contain an
-# ignored path are descended into instead of being removed wholesale, so an
-# exclusion deep inside a cache folder survives along with its parents.
-oc_prune_tree() {
-  local dir=$1 child failed=0
-  while IFS= read -r -d '' child; do
-    if oc_is_ignored "$child"; then
-      continue
-    elif oc_has_ignored_descendant "$child"; then
-      oc_prune_tree "$child" || failed=1
-    else
-      rm -rf --one-file-system -- "$child" 2>/dev/null || failed=1
-    fi
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-  return "$failed"
-}
-
-# Apparent size of a path minus whatever the ignore list protects inside it,
-# so scans report what a clean would actually free.
-oc_reclaimable_bytes() {
-  local path=$1 total protected=0 entry match
-  total=$(oc_path_bytes "$path")
-  if oc_has_ignored_descendant "$path"; then
-    for entry in "${OC_IGNORE[@]}"; do
-      if oc_is_glob "$entry"; then
-        while IFS= read -r -d '' match; do
-          # Count each protected match once (skip ones inside another match).
-          [[ -n $match ]] && protected=$((protected + $(oc_path_bytes "$match")))
-        done < <(find "$path" -xdev -mindepth 1 -path "$entry" -prune -print0 2>/dev/null)
-      elif [[ $entry == "$path"/* && -e $entry ]]; then
-        protected=$((protected + $(oc_path_bytes "$entry")))
-      fi
-    done
+  if [[ $path != / ]]; then
+    local parent=${path%/*}
+    [[ -n $parent && $parent != "$path" ]] && oc_is_ignored "$parent" && return 0
   fi
-  total=$((total - protected))
-  echo $((total > 0 ? total : 0))
+  return 1
 }
+
+# Size and removal use the same mount and exclusion policy.
+oc_reclaimable_bytes() { oc_fs size "$1"; }
 
 # ---------------------------------------------------------------------------
 # Guarded deletion. Every user-level removal goes through these helpers, which
@@ -215,81 +195,28 @@ oc_path_allowed() {
   return 0
 }
 
-# Remove the contents of a directory but keep the directory itself (and its
-# permissions), so applications that hold it open keep working. Ignored paths
-# anywhere inside are kept (see oc_prune_tree).
-oc_empty_dir() {
-  local dir=$1
-  oc_path_allowed "$dir" || { oc_warn "refused (protected path): $dir"; return 1; }
-  [[ -d $dir && ! -L $dir ]] || return 0
-  oc_prune_tree "$dir" || {
-    oc_warn "some entries could not be removed in $dir"
-    return 1
-  }
-}
-
-# Remove a file or a whole directory tree. Symlinks are removed, never followed.
-# A directory that contains an ignored path is pruned instead: everything
-# else goes, the excluded path and its parent folders stay.
-oc_delete() {
-  local p=$1
-  oc_path_allowed "$p" || { oc_warn "refused (protected path): $p"; return 1; }
-  [[ -e $p || -L $p ]] || return 0
-  if oc_has_ignored_descendant "$p"; then
-    oc_prune_tree "$p" || { oc_warn "some entries could not be removed in $p"; return 1; }
-    return 0
-  fi
-  rm -rf --one-file-system -- "$p" 2>/dev/null || { oc_warn "could not remove $p"; return 1; }
-}
-
-# Move a path to the user's Trash following the freedesktop.org Trash spec,
-# so the user can restore it from any file manager.
-oc_trash() {
-  local p=$1
-  oc_path_allowed "$p" || { oc_warn "refused (protected path): $p"; return 1; }
-  [[ -e $p || -L $p ]] || return 0
-  # Moving a folder would carry an excluded path along with it; refuse.
-  if oc_has_ignored_descendant "$p"; then
-    oc_warn "refused: $p contains a path from your ignore list"
-    return 1
-  fi
-  if command -v gio >/dev/null 2>&1 && gio trash -- "$p" 2>/dev/null; then
-    return 0
-  fi
-  local trash="$OC_DATA_HOME/Trash" base name n=1 encoded
-  mkdir -p "$trash/files" "$trash/info"
-  base=$(basename -- "$p")
-  name=$base
-  while [[ -e $trash/files/$name || -e $trash/info/$name.trashinfo ]]; do
-    name="$base.$n"
-    n=$((n + 1))
-  done
-  encoded=$(jq -rn --arg p "$p" '$p | @uri | gsub("%2F"; "/")')
-  printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$encoded" "$(date +%Y-%m-%dT%H:%M:%S)" \
-    >"$trash/info/$name.trashinfo"
-  mv -- "$p" "$trash/files/$name" || {
-    rm -f "$trash/info/$name.trashinfo"
-    oc_warn "could not move $p to Trash"
-    return 1
-  }
-}
+# The helper checks the actual parents, mount IDs and exclusions again for
+# every operation. Path checks above are only a fast lexical rejection.
+oc_empty_dir() { oc_fs empty "$1"; }
+oc_delete() { oc_fs delete "$1"; }
+oc_trash() { oc_fs trash "$1"; }
 
 # ---------------------------------------------------------------------------
 # Item emission. A module scan prints one item per line as
-#   <bytes>\t<path-or-pseudo-path>\t<label>
+#   <bytes>\t<base64-path>\t<base64-label>
 # Path-based items that are ignored or empty are filtered out here.
 # ---------------------------------------------------------------------------
 oc_emit() {
   local bytes=$1 path=$2 label=$3
   [[ $bytes =~ ^[0-9]+$ ]] || bytes=0
-  printf '%s\t%s\t%s\n' "$bytes" "$path" "$label"
+  printf '%s\t%s\t%s\n' "$bytes" "$(printf %s "$path" | base64 -w0)" "$(printf %s "$label" | base64 -w0)"
 }
 
 oc_emit_path() {
-  local path=$1 label=${2:-$(basename -- "$1")} bytes
+  local path=$1 label=${2:-${1##*/}} bytes
   [[ -e $path ]] || return 0
   oc_is_ignored "$path" && return 0
-  bytes=$(oc_reclaimable_bytes "$path")
+  bytes=$(oc_reclaimable_bytes "$path") || return 0
   ((bytes > 0)) || return 0
   oc_emit "$bytes" "$path" "$label"
 }

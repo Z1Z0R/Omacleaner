@@ -1,5 +1,17 @@
 # Omacleaner changelog
 
+## Unreleased
+
+- Stop on unreadable, malformed or invalid saved restrictions; preserve an
+  explicitly empty selection and exclusions containing newlines.
+- Confine user-file operations through directory descriptors, refuse symlinked
+  ancestors and mounted children, including same-device bind mounts.
+- Preserve exact filename bytes in encoded scan records and panel Trash actions.
+- Keep personal scan paths out of subprocess arguments, including scan merges.
+- Preserve pre-existing CLI links and verify timer ownership before disabling.
+- Keep restore metadata for excluded or partially cleaned Trash payloads.
+- Add Python 3 as an explicit dependency for filesystem guards and regression tests.
+
 ## 1.0.0
 
 - New Omacleaner identity, author Zizor, MIT license.

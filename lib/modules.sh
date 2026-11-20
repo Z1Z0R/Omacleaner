@@ -20,7 +20,7 @@
 #              root / command : see kind
 #
 #   oc_avail_<id>   optional; prints a reason and returns 1 when unavailable
-#   oc_scan_<id>    prints items as "<bytes>\t<path>\t<label>" (see oc_emit)
+#   oc_scan_<id>    prints items as "<bytes>\t<base64-path>\t<base64-label>" (see oc_emit)
 #   oc_verbs_<id>   root modules: prints the helper verb(s) to run
 #   oc_clean_<id>   command modules: performs the cleanup
 #
@@ -126,14 +126,14 @@ oc_scan_user_cache() {
   [[ -d $OC_CACHE_HOME ]] || return 0
   local entry name
   while IFS= read -r -d '' entry; do
-    name=$(basename -- "$entry")
+    name=${entry##*/}
     oc_cache_name_protected "$name" && continue
     oc_name_in "$name" "${OC_DEV_CACHE_NAMES[@]}" "${OC_AUR_CACHE_NAMES[@]}" "${OC_ASSET_CACHE_NAMES[@]}" && continue
     [[ -L $entry ]] && continue
     if [[ -d $entry ]]; then
       oc_emit_path "$entry" "$name"
     fi
-  done < <(find "$OC_CACHE_HOME" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  done < <(oc_fs list "$OC_CACHE_HOME" 2>/dev/null)
 }
 
 # --- dev-cache --------------------------------------------------------------
@@ -191,14 +191,14 @@ oc_scan_downloaded_assets() {
 
 oc_scan_trash() {
   local trash="$OC_DATA_HOME/Trash" sub dir
-  for sub in files info expunged; do
+  for sub in files expunged; do
     [[ -d $trash/$sub ]] && oc_emit_path "$trash/$sub" "Trash ($sub)"
   done
   # Trash folders on removable / mounted drives (.Trash-UID at their root).
   for dir in /run/media/"$USER"/*/.Trash-"$UID" /media/*/.Trash-"$UID"; do
     [[ -d $dir ]] || continue
-    for sub in files info expunged; do
-      [[ -d $dir/$sub ]] && oc_emit_path "$dir/$sub" "$(basename -- "$(dirname -- "$dir")") trash ($sub)"
+    for sub in files expunged; do
+      [[ -d $dir/$sub ]] && oc_emit_path "$dir/$sub" "Mounted Trash ($sub)"
     done
   done
   return 0
@@ -329,7 +329,7 @@ oc_clean_docker() {
 # while its Exec may still work (common with AppImage integrations).
 oc_desktop_program() {
   local file=$1 line prog
-  line=$(grep -m1 '^Exec=' "$file" 2>/dev/null | cut -d= -f2-) || true
+  line=$(grep -m1 '^Exec=' <"$file" 2>/dev/null | cut -d= -f2-) || true
   [[ -z $line ]] && return 1
   # Skip "env VAR=value ..." prefixes and quotes.
   read -r -a words <<<"$line"
@@ -354,7 +354,7 @@ oc_scan_broken_entries() {
       command -v "$prog" >/dev/null 2>&1 && continue
     fi
     oc_is_ignored "$file" && continue
-    oc_emit "$(stat -c %s "$file")" "$file" "$(basename -- "$file") → missing $prog"
+    oc_emit "$(oc_path_bytes "$file")" "$file" "${file##*/} → missing $prog"
   done
   return 0
 }
@@ -365,14 +365,7 @@ oc_scan_large_files() {
   local min_mb
   min_mb=$(oc_config_get largeFileMinMB 1024)
   [[ $min_mb =~ ^[0-9]+$ ]] || min_mb=1024
-  # Only visible top-level folders of $HOME: hidden directories belong to
-  # applications and are covered by the cache modules.
-  find "$HOME" -xdev -mindepth 1 \
-    \( -path "$HOME/.*" -o -name node_modules -o -name .git \) -prune -o \
-    -type f -size +"${min_mb}"M -printf '%s\t%p\t%TY-%Tm-%Td\n' 2>/dev/null |
-    sort -rn |
-    while IFS=$'\t' read -r bytes path date; do
-      oc_is_ignored "$path" && continue
-      oc_emit "$bytes" "$path" "${path#"$HOME"/} (modified $date)"
-    done
+  # The descriptor-based walk emits encoded records, including tabs/newlines
+  # and non-UTF-8 filename bytes, without putting file paths into argv.
+  oc_fs large "$min_mb" | sort -rn
 }

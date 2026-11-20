@@ -29,7 +29,7 @@ Usage:
   omacleaner scan [MODULE...] [--details] [--notify] [--json]
   omacleaner clean (MODULE... | --defaults) [--dry-run] [--yes] [--json]
   omacleaner maintain TASK... [--yes] [--json]
-  omacleaner trash PATH... [--yes] [--json]
+  omacleaner trash PATH... [--path-base64] [--yes] [--json]
   omacleaner memory [--limit N] [--json]
   omacleaner memory quit UNIT [--force] [--yes] [--json]
   omacleaner memory kill PID [--force] [--yes] [--json]
@@ -66,6 +66,7 @@ OC_NOTIFY=0
 OC_DEFAULTS=0
 OC_HISTORY_N=20
 OC_FORCE=0
+OC_ENCODED_PATHS=0
 OC_LIMIT_SET=0
 POSITIONAL=()
 
@@ -80,6 +81,7 @@ parse_flags() {
       --notify) OC_NOTIFY=1 ;;
       --defaults) OC_DEFAULTS=1 ;;
       --force | -f) OC_FORCE=1 ;;
+      --path-base64) OC_ENCODED_PATHS=1 ;;
       --limit) OC_HISTORY_N=${2:?--limit needs a number}; OC_LIMIT_SET=1; shift ;;
       -h | --help) usage; exit 0 ;;
       --) shift; POSITIONAL+=("$@"); break ;;
@@ -100,10 +102,9 @@ validate_modules() {
 # Modules pre-selected for `--defaults`: the user's saved selection when it
 # exists (config key "selection"), otherwise each module's default flag.
 default_selection() {
-  local saved
-  saved=$(jq -r '.selection // empty | .[]' "$OC_CONFIG_FILE" 2>/dev/null || true)
-  if [[ -n $saved ]]; then
-    echo "$saved"
+  oc_config_load
+  if jq -e 'has("selection")' <<<"$OC_CONFIG_JSON" >/dev/null; then
+    jq -r '.selection[]' <<<"$OC_CONFIG_JSON"
     return
   fi
   local line
@@ -134,14 +135,14 @@ scan_module_json() {
     items=$(oc_module_scan "$id" 2>/dev/null || true)
   fi
   is_selected "$id" && selected=true
-  jq -cn \
+  jq -Rsc \
     --arg id "$id" --arg title "$title" --arg description "$desc" \
     --arg kind "$kind" --arg risk "$risk" --arg mode "$mode" \
-    --arg reason "$reason" --arg items "$items" \
+    --arg reason "$reason" \
     --argjson available "$available" --argjson selected "$selected" \
     --slurpfile catalog "$OC_ROOT/lib/details.json" '
-    ($items | split("\n") | map(select(length > 0) | split("\t")
-      | {bytes: (.[0] | tonumber), path: .[1], label: (.[2] // "")})
+    (split("\n") | map(select(length > 0) | split("\t")
+      | {bytes: (.[0] | tonumber), pathBase64: .[1], pathIsUtf8: ((.[1] | @base64d | tojson | fromjson | @base64) == .[1]), path: (.[1] | @base64d), label: (.[2] | @base64d)})
       | sort_by(-.bytes)) as $all
     | {
         id: $id, title: $title, description: $description,
@@ -158,7 +159,7 @@ scan_module_json() {
                    effect: ($rule.effect // "Review this folder before clearing it. Its application may need to download or rebuild data; close the application first.")}
 
           else . end))
-      }'
+      }' <<<"$items"
 }
 
 cmd_scan() {
@@ -200,13 +201,14 @@ cmd_scan() {
 merge_into_last_scan() {
   local partial=$1 merged
   [[ -f $OC_LAST_SCAN ]] || return 0
-  merged=$(jq -c --argjson p "$partial" '
-      ($p.modules | map({key: .id, value: .}) | from_entries) as $new
+  merged=$(jq -sc '
+      .[0] as $p | .[1]
+      | ($p.modules | map({key: .id, value: .}) | from_entries) as $new
       | .modules |= map($new[.id] // .)
       | .generatedAt = $p.generatedAt
       | .totalBytes = (.modules | map(select(.available) | .bytes) | add // 0)
       | .selectedBytes = (.modules | map(select(.available and .selected) | .bytes) | add // 0)
-    ' "$OC_LAST_SCAN" 2>/dev/null) || return 0
+    ' < <(printf '%s\n' "$partial"; cat "$OC_LAST_SCAN") 2>/dev/null) || return 0
   oc_state_write <<<"$merged"
 }
 
@@ -276,11 +278,11 @@ cmd_clean() {
   if ((OC_DRY_RUN == 1)); then
     local out=""
     for id in "${!items_of[@]}"; do
-      out+=$(jq -cn --arg id "$id" --arg items "${items_of[$id]}" --arg mode "$(oc_module_field "$id" 7)" '
+      out+=$(jq -Rsc --arg id "$id" --arg mode "$(oc_module_field "$id" 7)" '
         {id: $id, mode: $mode,
-         items: ($items | split("\n") | map(select(length > 0) | split("\t")
-           | {bytes: (.[0] | tonumber), path: .[1], label: (.[2] // "")}))}
-        | .bytes = (.items | map(.bytes) | add // 0)')$'\n'
+         items: (split("\n") | map(select(length > 0) | split("\t")
+           | {bytes: (.[0] | tonumber), pathBase64: .[1], pathIsUtf8: ((.[1] | @base64d | tojson | fromjson | @base64) == .[1]), path: (.[1] | @base64d), label: (.[2] | @base64d)}))}
+        | .bytes = (.items | map(.bytes) | add // 0)' <<<"${items_of[$id]}")$'\n'
     done
     local result
     result=$(jq -cs '{ok: true, dryRun: true, plannedBytes: (map(.bytes) | add // 0), modules: .}' <<<"$out")
@@ -335,9 +337,12 @@ cmd_clean() {
           continue
         fi
         oc_step "Cleaning $(oc_module_field "$id" 2)…"
-        local bytes path label
-        while IFS=$'\t' read -r bytes path _; do
-          [[ -n $path ]] || continue
+        local bytes path encoded
+        while IFS=$'\t' read -r bytes encoded _; do
+          [[ -n $encoded ]] || continue
+          # NUL termination preserves trailing newlines; never use $(...) for
+          # decoding a filename. The base64 identity is the cleanup authority.
+          IFS= read -r -d '' path < <(printf %s "$encoded" | base64 -d; printf '\0')
           case "$mode" in
             contents) oc_empty_dir "$path" && freed=$((freed + bytes)) || errors=$((errors + 1)) ;;
             delete) oc_delete "$path" && freed=$((freed + bytes)) || errors=$((errors + 1)) ;;
@@ -495,7 +500,7 @@ cmd_ignore() {
   local action=${POSITIONAL[0]:-list} path=${POSITIONAL[1]:-}
   case "$action" in
     list)
-      if [[ $OC_JSON == 1 ]]; then oc_ignore_list | jq -Rcs 'split("\n") | map(select(length > 0))'; else oc_ignore_list; fi
+      if [[ $OC_JSON == 1 ]]; then jq -c '.ignore // []' <<<"$OC_CONFIG_JSON"; else oc_ignore_list; fi
       ;;
     add | remove)
       [[ -n $path ]] || oc_die "usage: omacleaner ignore $action PATH" 2
@@ -537,15 +542,15 @@ cmd_config() {
       [[ " $OC_CONFIG_KEYS " == *" $key "* ]] || oc_die "unknown config key: $key (known: $OC_CONFIG_KEYS)" 2
       case "$key" in
         selection | ignore)
-          jq -e 'type == "array"' <<<"$value" >/dev/null 2>&1 || oc_die "$key must be a JSON array, e.g. '[\"user-cache\",\"trash\"]'" 2
+          jq -e 'type == "array" and all(.[]; type == "string" and length > 0 and (contains("\u0000") | not))' <<<"$value" >/dev/null 2>&1 || oc_die "$key must be a JSON array, e.g. '[\"user-cache\",\"trash\"]'" 2
           if [[ $key == selection ]]; then
             local sel
-            for sel in $(jq -r '.[]' <<<"$value"); do validate_modules "$sel"; done
+            while IFS= read -r -d '' sel; do validate_modules "$sel"; done < <(jq -j '.[] | ., "\u0000"' <<<"$value")
           fi
           oc_config_write '.[$k] = $v' --arg k "$key" --argjson v "$value"
           ;;
         *)
-          [[ $value =~ ^[0-9]+$ ]] || oc_die "$key must be a whole number" 2
+          [[ $value =~ ^[0-9]{1,6}$ ]] || oc_die "$key must be a whole number from 0 to 999999" 2
           oc_config_write '.[$k] = ($v | tonumber)' --arg k "$key" --arg v "$value"
           ;;
       esac
@@ -574,7 +579,7 @@ cmd_schedule() {
       [[ $period =~ ^(daily|weekly|monthly)$ ]] || oc_die "period must be daily, weekly or monthly" 2
       local f
       for f in "$service" "$timer"; do
-        if [[ -e $f ]] && ! grep -qF "$OC_UNIT_MARKER" "$f"; then
+        if [[ -e $f || -L $f ]] && { [[ -L $f || ! -f $f ]] || ! grep -qxF "$OC_UNIT_MARKER" "$f"; }; then
           oc_die "$f exists and was not created by omacleaner; refusing to overwrite it"
         fi
       done
@@ -608,6 +613,14 @@ EOF
       oc_info "scheduled $period scan ($OC_UNIT_NAME.timer)"
       ;;
     disable)
+      local f
+      for f in "$service" "$timer"; do
+        if [[ -e $f || -L $f ]] && { [[ -L $f || ! -f $f ]] || ! grep -qxF "$OC_UNIT_MARKER" "$f"; }; then
+          oc_die "$f is not managed by omacleaner; refusing to disable the timer"
+        fi
+      done
+      # Missing files do not establish ownership of a loaded/vendor timer.
+      [[ -f $service && -f $timer ]] || oc_die "managed timer files are missing; refusing to disable"
       systemctl --user disable --now "$OC_UNIT_NAME.timer" >/dev/null 2>&1 || true
       local f
       for f in "$service" "$timer"; do
@@ -645,6 +658,17 @@ cmd_history() {
 # Move individual files/folders to the Trash (used for review-only results such
 # as large files). The same guards as module cleaning apply.
 cmd_trash() {
+  if ((OC_ENCODED_PATHS == 1)); then
+    local i encoded decoded
+    for i in "${!POSITIONAL[@]}"; do
+      encoded=${POSITIONAL[$i]}
+      [[ $encoded =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || oc_die "invalid encoded path" 2
+      # Reject NULs and non-canonical encodings before Bash reads the bytes.
+      printf %s "$encoded" | python3 -c 'import base64,sys; s=sys.stdin.buffer.read(); b=base64.b64decode(s,validate=True); sys.exit(not b or b"\0" in b or base64.b64encode(b)!=s)' || oc_die "invalid encoded path" 2
+      IFS= read -r -d '' decoded < <(printf %s "$encoded" | base64 -d; printf '\0')
+      POSITIONAL[$i]=$decoded
+    done
+  fi
   ((${#POSITIONAL[@]} > 0)) || oc_die "usage: omacleaner trash PATH..." 2
   local path results="" ok bytes failed=0
   for path in "${POSITIONAL[@]}"; do
@@ -659,7 +683,7 @@ cmd_trash() {
     ok=true
     oc_trash "$path" || { ok=false; failed=1; }
     [[ $ok == true ]] && oc_info "moved to Trash: $path"
-    results+=$(jq -cn --arg p "$path" --argjson ok "$ok" --argjson b "$bytes" '{path: $p, ok: $ok, bytes: $b}')$'\n'
+    results+=$(printf %s "$path" | base64 -w0 | jq -Rsc --argjson ok "$ok" --argjson b "$bytes" '{pathBase64: ., path: (. | @base64d), ok: $ok, bytes: $b}')$'\n'
   done
   oc_history_append "$(jq -cs --arg at "$(date -Iseconds)" '{at: $at, freedBytes: 0, trashedBytes: (map(select(.ok) | .bytes) | add // 0), modules: [{id: "trash-items", ok: all(.ok), freedBytes: 0}]}' <<<"$results")"
   [[ $OC_JSON == 1 ]] && jq -cs '{ok: all(.ok), items: .}' <<<"$results"
@@ -725,11 +749,15 @@ cmd_memory() {
 # Opt-in: expose the CLI on PATH via ~/.local/bin (never overwrites a real file).
 cmd_link() {
   local target="$HOME/.local/bin/omacleaner"
-  if [[ -e $target && ! -L $target ]]; then
-    oc_die "$target exists and is not a link; refusing to replace it"
+  if [[ -e $target || -L $target ]]; then
+    if [[ -L $target && $(readlink -- "$target") == "$OC_ROOT/bin/omacleaner" ]]; then
+      oc_info "CLI link already installed"
+      return 0
+    fi
+    oc_die "$target already exists; refusing to replace it"
   fi
   mkdir -p "$HOME/.local/bin"
-  ln -sfn "$OC_ROOT/bin/omacleaner" "$target"
+  ln -sT "$OC_ROOT/bin/omacleaner" "$target"
   oc_info "linked $target → $OC_ROOT/bin/omacleaner"
 }
 
@@ -752,10 +780,11 @@ cmd_open() {
 
 # ---------------------------------------------------------------------------
 main() {
-  oc_require jq gawk du find numfmt
+  oc_require jq gawk du find numfmt python3 base64
   local cmd=${1:-help}
   (($# > 0)) && shift
   parse_flags "$@"
+  case "$cmd" in scan | clean | trash | config | ignore | maintain) oc_config_load; oc_ignore_load ;; esac
   case "$cmd" in
     scan) cmd_scan ;;
     clean) cmd_clean ;;

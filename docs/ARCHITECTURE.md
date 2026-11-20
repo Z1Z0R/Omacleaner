@@ -6,7 +6,8 @@
 | Panel.qml / DetailText.qml | Bar button, popup and plain-text detail rendering |
 | bin/omacleaner | CLI and shared backend |
 | bin/omacleaner-root | Privileged helper with fixed verbs |
-| lib/common.sh | Paths, configuration, ignore rules and deletion guards |
+| lib/common.sh | Paths, validated configuration snapshots, ignore rules and encoded records |
+| lib/filesystem.py | Descriptor-based scan, cleanup and Trash operations |
 | lib/modules.sh | Cleanup registry and scan functions |
 | lib/details.json | Category scope/effects and recognized cache-name guidance |
 | lib/memory.sh | Memory reporting and process actions |
@@ -42,7 +43,7 @@ plus functions named after the id (dashes become underscores):
 
 | Function | Required | Purpose |
 |---|---|---|
-| `oc_scan_<id>` | yes | print items as `bytes<TAB>path<TAB>label`; must not modify anything |
+| `oc_scan_<id>` | yes | print items through `oc_emit` as `bytes<TAB>base64(path)<TAB>base64(label)`; must not modify anything |
 | `oc_avail_<id>` | no | print a reason and return 1 when the module cannot run |
 | `oc_verbs_<id>` | root modules | print the helper verb(s), e.g. `journal 200` |
 | `oc_clean_<id>` | command modules | perform the cleanup as the user |
@@ -56,19 +57,30 @@ User modules are cleaned generically according to `mode`:
 | `trash` | `oc_trash`: move the item to the freedesktop Trash |
 | `report` | never cleaned in bulk; individual removal through `omacleaner trash` |
 
-All three removal helpers call `oc_path_allowed` on the item itself. Before
-anything recursive happens, they also check `oc_has_ignored_descendant`:
+All user-file size and cleanup helpers call `lib/filesystem.py`. They send a
+NUL-delimited request on standard input, including the exact filename bytes
+and the validated exclusion snapshot. The helper resolves every ancestor
+with `O_NOFOLLOW` and uses directory descriptors for traversal, unlink, rmdir
+and rename. It compares Linux mount IDs from `/proc/self/fdinfo` at every
+directory transition beneath the allowed root, including bind mounts that
+share a device ID. A mounted child causes cleanup to stop with an error.
 
-- `oc_empty_dir` and `oc_delete` walk the tree with `oc_prune_tree`. It
-  removes whole entries that hold no excluded path and descends into those
-  that do.
-- `oc_trash` refuses a folder that holds an excluded path.
+The helper preserves excluded entries and their parent directories. A folder
+containing excluded entries or a mounted child cannot be moved to Trash.
+Trash metadata is removed only after its matching payload is completely
+removed; orphan metadata is retained. Trash destination directories are also
+opened without following symlinks. Cross-filesystem Trash moves are refused.
 
-`oc_reclaimable_bytes` subtracts the protected parts from scan sizes.
+Only absent configuration uses defaults. Existing unreadable or malformed
+configuration stops the operation. Each CLI invocation validates one snapshot;
+an explicit empty `selection` is distinct from an absent selection.
 
-`oc_path_allowed` itself accepts only absolute paths inside `$HOME` (or a mounted drive's `.Trash-UID`), and it rejects `..`,
-`$HOME` itself, the top-level XDG directories, the plugin's own config, and
-anything on the ignore list. `rm` always runs with `--one-file-system`.
+Internal scan records base64-encode filenames and labels, so tabs, newlines,
+backslashes, trailing newlines and non-UTF-8 bytes cannot change record
+boundaries. JSON exposes `path` for display and `pathBase64` for exact file
+actions. The panel passes `pathBase64` to `trash --path-base64`; it disables
+Open folder for non-UTF-8 display paths (`pathIsUtf8: false`). Scan records
+and merged JSON travel on standard input, never in subprocess arguments.
 
 ### Adding a module
 
