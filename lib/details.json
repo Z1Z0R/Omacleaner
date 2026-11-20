@@ -1,0 +1,95 @@
+{
+  "categories": {
+    "user-cache": {
+      "scope": "Immediate application cache directories under XDG_CACHE_HOME (normally ~/.cache), listed individually below. Developer caches, AUR builds and downloaded models/browsers have their own categories and are excluded here.",
+      "effect": "Empties the listed directories while keeping the directories themselves. Apps can recreate cached data, so the next launch, thumbnail view or game may be slower and downloads may recur. Close affected apps first. Unknown cache folders need your review: some apps store offline data here.",
+      "keeps": "Omarchy and Quickshell caches; top-level folders named *.bak, *.backup, *.orig or *.old; symlinked cache directories; and ignored paths. Browser passwords, bookmarks and profiles outside the cache directory are outside this category's scope.",
+      "advice": "Each entry shows its scanned size, exact path, likely purpose and clearing effect. Explanations for recognized names are guidance, not an inspection of the files. Sizes are apparent bytes, not guaranteed physical disk savings."
+    },
+    "dev-cache": {
+      "scope": "Package and build caches for npm, pnpm, Yarn, Bun, pip, uv, Poetry, Go, Cargo, Gradle, Composer, Deno and other supported tools. Includes Cargo registry sources and Git checkouts, not just compressed packages.",
+      "effect": "Empties the listed stores. Later installs and builds may require internet access, take longer or fail offline. Close active builds and package managers first.",
+      "keeps": "Project sources, virtual environments and project node_modules are not searched by this category. Ignored paths stay in place.",
+      "advice": "Review each full path below; this is optional and not selected by default."
+    },
+    "aur-cache": {
+      "scope": "The yay and paru directories inside your cache folder, including downloaded source trees, cloned packaging repositories, build output and locally built package archives.",
+      "effect": "Empties these directories. Future AUR updates may clone sources and rebuild packages again. Local edits inside these directories are deleted too.",
+      "keeps": "Installed packages are unaffected. Paths on the ignore list are preserved.",
+      "advice": "Finish any running AUR build and preserve local PKGBUILD changes before cleaning. Requires yay or paru."
+    },
+    "downloaded-assets": {
+      "scope": "Supported cache folders for Hugging Face, Torch, Whisper, LM Studio, Playwright, Puppeteer, Cypress, Electron and other downloaded runtimes or models.",
+      "effect": "Empties downloaded assets. Large downloads may be required before AI tools, browser tests or related apps work again; offline use may stop working.",
+      "keeps": "Models and runtimes stored outside the listed paths are outside this category. Ignored paths are preserved.",
+      "advice": "Optional, not selected by default. Review exact paths and download sizes first."
+    },
+    "trash": {
+      "scope": "Files, restore metadata and expunged entries in your user Trash and supported .Trash-UID directories on mounted media.",
+      "effect": "Permanently empties the listed Trash directories. The file manager can no longer restore those files.",
+      "keeps": "Files outside these Trash locations and ignored paths are preserved. Shared .Trash/UID locations are not scanned.",
+      "advice": "Review the Trash in your file manager before cleaning. Entries below are Trash directories, not individual discarded files."
+    },
+    "pacman-cache": {
+      "scope": "Package archives managed by paccache under /var/cache/pacman/pkg. Includes old versions and archives for packages no longer installed.",
+      "effect": "Keeps the configured pacmanKeep versions per package (default 2), then removes all cached versions of uninstalled packages. These archives will not be available for offline reinstall or downgrade.",
+      "keeps": "Installed packages and the retained cache versions remain. Your home-folder ignore list does not apply to this system command.",
+      "advice": "Needs pacman-contrib and administrator authentication. Estimates come from paccache dry runs; old and uninstalled groups can overlap, so totals may overestimate savings."
+    },
+    "journal": {
+      "scope": "Archived systemd journal files. The retention target is journalMaxMB (default 200 MiB).",
+      "effect": "Runs journalctl vacuum by size. Older diagnostic history is permanently removed. Active journal files are not vacuumed.",
+      "keeps": "Active journals and retained archives remain. Other application log files are not included; home-folder ignores do not apply.",
+      "advice": "Requires administrator authentication. Reported excess includes active journals, so actual reclaimable space may be lower."
+    },
+    "coredumps": {
+      "scope": "Crash dump files named core.* directly inside /var/lib/systemd/coredump.",
+      "effect": "Permanently removes captured process memory used for debugging application crashes.",
+      "keeps": "Programs and ordinary logs remain. Home-folder ignores do not apply to this fixed system action.",
+      "advice": "Requires administrator authentication. Keep reports you still need to debug; unreadable files may not appear in the scan."
+    },
+    "orphans": {
+      "scope": "Packages reported by pacman -Qdtq: installed as dependencies, with no current package requiring them.",
+      "effect": "Runs pacman -Rns on the current orphan list. Dependency removal can include further unused dependencies and package backup configuration files.",
+      "keeps": "Explicitly installed packages are not the initial targets. Pacman resolves the final removal transaction; home-folder ignores do not apply.",
+      "advice": "Optional and requires administrator authentication. Review the names below; mark a package explicitly installed with pacman -D --asexplicit if you want to retain it."
+    },
+    "snapper": {
+      "scope": "Snapshots in Snapper's root configuration managed by its number cleanup rule.",
+      "effect": "Applies Snapper's configured number retention policy. This is not a promise to remove every snapshot listed, and removed restore points cannot be recovered.",
+      "keeps": "Snapshots retained by that policy remain. Other configurations and cleanup rules are outside this action.",
+      "advice": "Optional and requires administrator authentication. Disk savings are unknown because snapshots share data blocks."
+    },
+    "docker": {
+      "scope": "Stopped containers, unused networks, dangling images and unused build cache, as handled by docker system prune.",
+      "effect": "Removes those resources. Data stored only in stopped containers' writable layers is lost; future builds may take longer.",
+      "keeps": "Volumes are never passed to prune. Running containers and non-dangling images are not targeted.",
+      "advice": "Optional. Requires access to the Docker daemon, which may grant system-level privileges. The Docker size summary is an estimate, not a list of exact prune candidates."
+    },
+    "broken-entries": {
+      "scope": "User application launchers and autostart .desktop files whose Exec program appears to be missing.",
+      "effect": "Moves matching launcher files to Trash. Launchers using unusual command quoting or wrappers can need manual review.",
+      "keeps": "Applications, system launchers and ignored files remain. TryExec alone does not cause removal.",
+      "advice": "Optional. Check the reported missing program before cleaning; restore a wrongly identified launcher from Trash."
+    },
+    "large-files": {
+      "scope": "Regular files larger than largeFileMinMB (default 1024 MiB) in visible home folders. Hidden top-level folders, .git and node_modules trees are excluded.",
+      "effect": "Review only: this category is never bulk cleaned. Open the containing folder or move one chosen file to Trash after confirmation.",
+      "keeps": "Everything remains until you explicitly choose a file. Moving to Trash does not itself free disk space; emptying Trash does.",
+      "advice": "These are personal files, not necessarily junk. Scanning stays on the home filesystem; ignored paths are excluded."
+    }
+  },
+  "userCaches": [
+    {"match": "^(chromium|google-chrome.*|brave.*|microsoft-edge.*|vivaldi.*|opera.*|helium.*)$", "purpose": "Chromium-family browser cache: downloaded web resources, code and GPU caches under this folder.", "effect": "Web pages may reload resources and take longer initially. Close this browser first. Profile data stored outside this cache folder is not targeted."},
+    {"match": "^(mozilla|firefox.*|librewolf.*|zen.*)$", "purpose": "Firefox-family browser cache, usually organized into per-profile cache directories.", "effect": "Cached web resources are fetched again. Close the browser first; offline cached resources may be unavailable until revisited."},
+    {"match": "^thumbnails$", "purpose": "Thumbnail previews generated by file managers for images, videos and documents.", "effect": "Previews regenerate as you browse folders. Original images, videos and documents remain outside this cache."},
+    {"match": "^(mesa_shader_cache.*|mesa.*|nvidia.*|AMD.*|vulkan.*|shader.*|GLCache)$", "purpose": "Graphics driver or application shader cache used to avoid recompiling rendering programs.", "effect": "Games and GPU apps may stutter or take longer on their next run while shaders compile again. Close them first."},
+    {"match": "^(fontconfig)$", "purpose": "Per-user font lookup cache generated by fontconfig.", "effect": "Font lookup caches regenerate; the next app start may be slower. Installed font files are not targeted."},
+    {"match": "^(spotify.*)$", "purpose": "Spotify application cache, which may include locally cached audio and artwork.", "effect": "Artwork and audio may download again. Cached listening may be unavailable offline. Close Spotify before clearing."},
+    {"match": "^(discord.*|slack.*|teams.*|signal.*|electron.*|[Cc]ode.*|code-oss.*|[Cc]ursor.*|[Vv][Ss][Cc]odium.*)$", "purpose": "Application cache, commonly containing Electron/Chromium web resources, compiled code and GPU data.", "effect": "The app rebuilds or downloads cached resources on next launch. Close it first; settings outside this directory are not targeted."},
+    {"match": "^(nvim.*|vim.*)$", "purpose": "Editor cache, potentially including plugin downloads, indexes or compiled data, depending on configuration.", "effect": "Editor startup and indexing may take longer. Inspect for custom data and close the editor before cleaning."},
+    {"match": "^(gstreamer.*)$", "purpose": "GStreamer media plugin registry and cached discovery data.", "effect": "Media applications may rescan installed plugins next time they start."},
+    {"match": "^(webkit.*|WebKit.*|epiphany.*)$", "purpose": "WebKit-based application cache, including cached web resources.", "effect": "Embedded web content may download again. Close affected apps; offline resources may need to be revisited online."},
+    {"match": "^(qtshadercache.*|qt[56].*|qmlcache.*)$", "purpose": "Qt application cache, often compiled QML or graphics shader data.", "effect": "Affected Qt apps may rebuild cached data on their next start. Omarchy and Quickshell's named cache directories are protected separately."}
+  ]
+}

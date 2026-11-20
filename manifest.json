@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "omacleaner",
+  "name": "Omacleaner",
+  "version": "1.0.0",
+  "author": "Zizor",
+  "description": "Disk cleanup, application memory usage, and system maintenance for the Omarchy shell.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Omacleaner",
+    "description": "Shows reclaimable disk space and opens the cleaner panel",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showSize": false,
+      "autoScanHours": 6
+    },
+    "schema": [
+      {
+        "key": "showSize",
+        "type": "bool",
+        "label": "Show reclaimable size next to the icon"
+      },
+      {
+        "key": "autoScanHours",
+        "type": "number",
+        "label": "Background scan interval in hours (0 = off)"
+      }
+    ]
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/Z1Z0R/Omacleaner"
+}
