@@ -4,6 +4,10 @@ An [Omarchy](https://omarchy.org) bar plugin for disk cleanup, application memor
 
 **Author: Zizor · License: MIT**
 
+![Illustrative Omacleaner Disk panel preview with expanded cache details and maintenance actions](docs/preview.png)
+
+*Generated example preview with sample data. Appearance varies with your Omarchy theme.*
+
 Expand any category with **Show details** to see its full scope, cleanup effects, what is kept, and every scanned item. User caches include an application-by-application size breakdown, full paths, descriptions, and rebuild effects. Details are sorted by size; **Show more** reveals additional entries.
 
 - **Scan first, clean second.** Scanning never changes anything. Cleaning always re-scans, then asks for confirmation.
