@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use the same Bash exclusion matcher for scanning and recursive cleanup,
+  preserving saved character classes, escaped wildcards and extended patterns.
 - Stop on unreadable, malformed or invalid saved restrictions; preserve an
   explicitly empty selection and exclusions containing newlines.
 - Confine user-file operations through directory descriptors, refuse symlinked

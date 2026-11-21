@@ -204,6 +204,9 @@ Static catalogues: id, title, description, kind/root, default selection, risk an
 Manages the ignore list. Entries are absolute paths (`~` allowed) or globs
 (stored as written, e.g. `'*/myapp/*.keep'`). In a glob, `*` also matches `/`.
 A path matches when it is equal to an entry, below it, or matches it as a glob.
+Scanning and recursive cleanup use the same Bash pattern matcher, including
+POSIX character classes (`[[:digit:]]`), backslash escapes, and extended
+patterns such as `@(keep|saved)`. Patterns are never evaluated as commands.
 
 The protection also covers paths nested inside what a module cleans. When a
 cleaned folder contains an excluded path, the folder is pruned around it

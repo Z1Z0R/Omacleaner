@@ -157,21 +157,11 @@ oc_is_glob() { [[ $1 == *[\*?[]* ]]; }
 
 # True when a path is covered by the ignore list: equal to an entry, inside
 # an entry, or matching an entry used as a glob.
+# shellcheck source=lib/exclusions.sh
+source "${OC_FS_HELPER%/*}/exclusions.sh"
 oc_is_ignored() {
-  local path=$1 entry
   oc_ignore_load
-  for entry in "${OC_IGNORE[@]}"; do
-    [[ $entry == / ]] && return 0
-    # shellcheck disable=SC2053 # glob matching is intended
-    if [[ $path == "$entry" || $path == "$entry"/* || $path == $entry ]]; then
-      return 0
-    fi
-  done
-  if [[ $path != / ]]; then
-    local parent=${path%/*}
-    [[ -n $parent && $parent != "$path" ]] && oc_is_ignored "$parent" && return 0
-  fi
-  return 1
+  oc_ignore_matches "$1" "${OC_IGNORE[@]}"
 }
 
 # Size and removal use the same mount and exclusion policy.

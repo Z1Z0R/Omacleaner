@@ -8,6 +8,7 @@
 | bin/omacleaner-root | Privileged helper with fixed verbs |
 | lib/common.sh | Paths, validated configuration snapshots, ignore rules and encoded records |
 | lib/filesystem.py | Descriptor-based scan, cleanup and Trash operations |
+| lib/exclusions.sh | Shared Bash exclusion matching and private matcher pipe protocol |
 | lib/modules.sh | Cleanup registry and scan functions |
 | lib/details.json | Category scope/effects and recognized cache-name guidance |
 | lib/memory.sh | Memory reporting and process actions |
@@ -64,6 +65,14 @@ with `O_NOFOLLOW` and uses directory descriptors for traversal, unlink, rmdir
 and rename. It compares Linux mount IDs from `/proc/self/fdinfo` at every
 directory transition beneath the allowed root, including bind mounts that
 share a device ID. A mounted child causes cleanup to stop with an error.
+
+Both the CLI and filesystem helper use `oc_ignore_matches` from
+`lib/exclusions.sh`, retaining Bash escapes, character classes, locale rules
+and extended patterns. When exclusions exist, the helper keeps one Bash
+matcher process per filesystem request; rules, filenames and responses travel
+over NUL-delimited private pipes. No patterns are evaluated as shell code or
+placed in process arguments. Missing or invalid matcher responses stop the
+operation instead of treating a path as unprotected.
 
 The helper preserves excluded entries and their parent directories. A folder
 containing excluded entries or a mounted child cannot be moved to Trash.

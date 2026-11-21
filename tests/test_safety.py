@@ -133,6 +133,123 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(keep.exists())
         self.assertFalse(remove.exists())
 
+    def test_saved_bash_patterns_protect_nested_cleanup_items(self):
+        cases = [
+            ("digits", "7.keep", "x.keep", "[[:digit:]].keep"),
+            ("escaped-question", "literal?.keep", "literalX.keep", r"literal\?.keep"),
+            ("escaped-star", "literal*.keep", "literalX.keep", r"literal\*.keep"),
+            ("escaped-brackets", "[7].keep", "7.keep", r"\[7\].keep"),
+            ("extended", "saved.keep", "junk.keep", "@(keep|saved).keep"),
+            ("negated-bracket", "a.keep", "x.keep", "[^x].keep"),
+            ("repeated", "keepkeep.keep", "junk.keep", "+(keep).keep"),
+        ]
+        kept, removed, rules = [], [], []
+        for folder, keep, discard, pattern in cases:
+            kept.append(self.file(f".cache/app/{folder}/{keep}", b"protected" * 200000))
+            removed.append(self.file(f".cache/app/{folder}/{discard}"))
+            rules.append(f"*/app/{folder}/{pattern}")
+        kept.append(self.file(".cache/app/dirs/keep/nested/data", b"protected" * 200000))
+        removed.append(self.file(".cache/app/dirs/drop/data"))
+        rules.append("*/app/dirs/@(keep|saved)")
+        # Existing saved settings: no setter or migration may discard rules.
+        self.save({"ignore": rules})
+        scan = json.loads(self.cli("scan", "user-cache", "--json").stdout)
+        self.assertLess(scan["modules"][0]["bytes"], 1000000)
+        self.cli("clean", "user-cache", "--yes")
+        for path in kept:
+            self.assertEqual(path.read_bytes(), b"protected" * 200000)
+        for path in removed:
+            self.assertFalse(path.exists(), str(path))
+
+    def test_exclusion_matcher_agrees_with_bash_for_saved_patterns(self):
+        pairs = [
+            ("*/[[:digit:]].keep", "/app/7.keep"),
+            ("*/[[:alpha:]].keep", "/app/é.keep"),
+            ("*/[[:space:]].keep", "/app/\n.keep"),
+            (r"*/literal\?.keep", "/app/literal?.keep"),
+            (r"*/literal\*.keep", "/app/literal*.keep"),
+            (r"*/back\\slash", "/app/back\\slash"),
+            ("*/@(keep|saved)", "/app/saved/nested/data"),
+            ("*/+(keep)", "/app/keepkeep"),
+            ("*/!(discard).keep", "/app/saved.keep"),
+            ("*/[^x].keep", "/app/a.keep"),
+            ("*/[!x].keep", "/app/a.keep"),
+            ("*/literal[", "/app/literal["),
+            ("/app/literal[7]", "/app/literal[7]/nested"),
+            ("*/trailing\\", "/app/trailing\\"),
+            ("*/[[:digit:]].keep", "/app/x.keep"),
+            ("*/@(keep|saved)", "/app/discard"),
+            (r"*/literal\?.keep", "/app/literalX.keep"),
+            ("*/[^x].keep", "/app/x.keep"),
+            ("/", "/app/anything"),
+            ("*/?.keep", b"/app/invalid-\xff.keep"),
+        ]
+        # Independent Bash oracle, rather than Python's approximation.
+        oracle = r'''
+while IFS= read -r -d '' rule && IFS= read -r -d '' candidate; do
+  result=0
+  while :; do
+    if [[ $rule == / || $candidate == "$rule" || $candidate == "$rule"/* || $candidate == $rule ]]; then
+      result=1; break
+    fi
+    [[ $candidate == / ]] && break
+    candidate=${candidate%/*}
+    [[ -n $candidate ]] || candidate=/
+  done
+  printf '%s\n' "$result"
+done
+'''
+        request = b"".join(os.fsencode(rule) + b"\0" + os.fsencode(path) + b"\0" for rule, path in pairs)
+        reference = subprocess.run(["bash", "--noprofile", "--norc", "-c", oracle], input=request,
+                                   capture_output=True, check=True)
+        expected = reference.stdout.splitlines()
+        self.assertEqual(len(expected), len(pairs))
+        for (rule, path), answer in zip(pairs, expected):
+            with self.subTest(rule=rule, path=path):
+                matcher = filesystem.Exclusions([rule])
+                try:
+                    self.assertEqual(matcher.matches(os.fsdecode(path)), answer == b"1")
+                finally:
+                    matcher.close()
+
+    def test_exclusion_matcher_failure_refuses_cleanup(self):
+        victim = self.file(".cache/app/keep")
+        with filesystem.Filesystem(str(self.home), str(self.home / ".cache"),
+                                   str(self.home / ".local/share"), str(self.config.parent),
+                                   ["*/@(keep|saved)"]) as fs:
+            fs.exclusions.process.kill()
+            fs.exclusions.process.wait()
+            with self.assertRaises(ValueError):
+                with fs.parent(str(victim.parent)) as (parent, name, boundary):
+                    fs.remove_at(parent, name, str(victim.parent), boundary, keep=True)
+        self.assertTrue(victim.exists())
+
+    def test_saved_pattern_is_data_not_shell_source(self):
+        marker = self.root / "must-not-exist"
+        discard = self.file(".cache/app/discard")
+        self.save({"ignore": [f"$(touch {marker})", f"`touch {marker}`"]})
+        self.cli("clean", "user-cache", "--yes")
+        self.assertFalse(discard.exists())
+        self.assertFalse(marker.exists())
+
+    def test_saved_extended_pattern_blocks_trashing_parent(self):
+        keep = self.file("Documents/old/saved/data")
+        other = self.file("Documents/old/other")
+        self.save({"ignore": ["*/Documents/old/@(keep|saved)"]})
+        self.assertNotEqual(self.cli("trash", str(keep.parent.parent), "--yes", ok=False).returncode, 0)
+        self.assertTrue(keep.exists())
+        self.assertTrue(other.exists())
+
+    def test_saved_character_class_preserves_trash_restore_metadata(self):
+        keep = self.file(".local/share/Trash/files/7.old/data")
+        metadata = self.file(".local/share/Trash/info/7.old.trashinfo")
+        discard = self.file(".local/share/Trash/files/x.old/data")
+        self.save({"ignore": ["*/Trash/files/[[:digit:]].old"]})
+        self.cli("clean", "trash", "--yes")
+        self.assertTrue(keep.exists())
+        self.assertTrue(metadata.exists())
+        self.assertFalse(discard.exists())
+
     def test_symlinked_parents_cannot_redirect_cleanup_or_trash(self):
         outside = self.root / "outside"
         outside.mkdir()
@@ -287,12 +404,12 @@ assert os.path.isfile(sys.argv[1] + "/keep")
         self.file(f".cache/{secret}/data")
         self.file(f"Videos/{secret}")
         self.file(f".local/share/applications/{secret}.desktop", b"[Desktop Entry]\nExec=/nonexistent/program\n")
-        self.save({"largeFileMinMB": 0})
+        self.save({"largeFileMinMB": 0, "ignore": [f"*/{secret}-excluded/[[:digit:]]"]})
         wrappers = self.root / "tools"
         wrappers.mkdir()
         log = self.root / "argv.jsonl"
         # Capture exec arguments deterministically instead of racing /proc.
-        for tool in ("jq", "python3", "base64", "du", "find", "stat", "basename", "grep", "sort"):
+        for tool in ("bash", "jq", "python3", "base64", "du", "find", "stat", "basename", "grep", "sort"):
             real = shutil.which(tool)
             wrapper = wrappers / tool
             wrapper.write_text("#!/usr/bin/python3\nimport json,os,sys\n"

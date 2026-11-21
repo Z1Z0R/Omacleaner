@@ -9,14 +9,62 @@ No recursive rm, pathname-based shutil walk, or privileged operations.
 import base64
 import contextlib
 import datetime
-import fnmatch
 import os
 import stat
+import subprocess
 import sys
 import urllib.parse
 
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+class Exclusions:
+    """Use the same Bash matcher as the CLI, without exposing paths in argv."""
+
+    def __init__(self, rules):
+        self.process = None
+        if rules:
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exclusions.sh")
+            self.process = subprocess.Popen(
+                ["bash", "--noprofile", "--norc", script],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env={**os.environ, "BASH_ENV": "/dev/null"},
+            )
+            try:
+                self.process.stdin.write(str(len(rules)).encode() + b"\0")
+                for rule in rules:
+                    self.process.stdin.write(os.fsencode(rule) + b"\0")
+                self.process.stdin.flush()
+            except (OSError, ValueError):
+                self.close()
+                raise ValueError("exclusion matcher unavailable") from None
+
+    def matches(self, path):
+        if self.process is None:
+            return False
+        try:
+            self.process.stdin.write(os.fsencode(path) + b"\0")
+            self.process.stdin.flush()
+            reply = self.process.stdout.read(2)
+        except (OSError, ValueError):
+            raise ValueError("exclusion matcher unavailable") from None
+        if reply not in (b"0\0", b"1\0"):
+            raise ValueError("invalid exclusion matcher response")
+        return reply == b"1\0"
+
+    def close(self):
+        if self.process is not None:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+            try:
+                self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+            self.process.stdout.close()
 
 
 def mount_id(fd):
@@ -47,15 +95,16 @@ class Filesystem:
         self.home, self.data = home, data
         self.protected = {home, cache, data, home + "/.config", home + "/.local"}
         self.config = config
-        self.ignored = ignored
+        self.exclusions = Exclusions(ignored)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.exclusions.close()
 
     def is_ignored(self, path):
-        # Match ancestors too, so a glob matching a directory protects its tree.
-        while path != "/":
-            if any(path == rule or fnmatch.fnmatchcase(path, rule) for rule in self.ignored):
-                return True
-            path = os.path.dirname(path)
-        return "/" in self.ignored
+        return self.exclusions.matches(path)
 
     def anchor(self, path):
         if not path.startswith("/") or os.path.normpath(path) != path or "//" in path:
@@ -251,22 +300,22 @@ def main():
                 raise ValueError("configuration contains a literal NUL")
             sys.stdout.buffer.write(contents)
         return
-    fs = Filesystem(home, cache, data, config, ignored)
-    if action == "size":
-        print(fs.size(path))
-    elif action == "list":
-        with fs.parent(path + "/.omacleaner-list") as (parent, _, _):
-            for name in os.listdir(parent):
-                sys.stdout.buffer.write(os.fsencode(path + "/" + name) + b"\0")
-    elif action == "large":
-        fs.large_files(int(path) * 1048576)
-    elif action == "trash":
-        fs.trash(path)
-    elif action in ("empty", "delete"):
-        with fs.parent(path) as (parent, name, boundary):
-            fs.remove_at(parent, name, path, boundary, keep=action == "empty")
-    else:
-        raise ValueError("unknown filesystem action")
+    with Filesystem(home, cache, data, config, ignored) as fs:
+        if action == "size":
+            print(fs.size(path))
+        elif action == "list":
+            with fs.parent(path + "/.omacleaner-list") as (parent, _, _):
+                for name in os.listdir(parent):
+                    sys.stdout.buffer.write(os.fsencode(path + "/" + name) + b"\0")
+        elif action == "large":
+            fs.large_files(int(path) * 1048576)
+        elif action == "trash":
+            fs.trash(path)
+        elif action in ("empty", "delete"):
+            with fs.parent(path) as (parent, name, boundary):
+                fs.remove_at(parent, name, path, boundary, keep=action == "empty")
+        else:
+            raise ValueError("unknown filesystem action")
 
 
 if __name__ == "__main__":
